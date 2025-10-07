@@ -1,5 +1,7 @@
 Version control for the env:
+------------------------- --------------
 (.venv) PS E:\202510\VeraGrid> pip list
+------------------------- --------------
 Package                   Version
 ------------------------- --------------
 about-time                4.2.1
@@ -175,6 +177,6 @@ windpowerlib              0.2.2
 wrapt                     1.17.3
 xlrd                      2.0.2
 xlwt                      1.3.0
-
+------------------------- --------------
 Useful links:
 https://veragrid.readthedocs.io/en/latest/index.html
