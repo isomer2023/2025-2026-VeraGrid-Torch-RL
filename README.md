@@ -158,3 +158,4 @@ xlwt                      1.3.0
 ------------------------- --------------
 Useful links:
 https://veragrid.readthedocs.io/en/latest/index.html
+https://github.com/MATPOWER/matpower/blob/master/data/case118.m
