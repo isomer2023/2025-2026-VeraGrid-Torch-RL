@@ -299,9 +299,26 @@ def train(args):
             csv.writer(f).writerow([ep, float(ep_ret)])
 
         if (ep + 1) % args.print_every == 0:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Ep {ep+1}/{args.max_episodes} | "
-                  f"Reward={ep_ret:.3f} | r_dist={info.get('r_dist', 0):.3f} | "
-                  f"r_penalty={info.get('r_penalty', 0):.3f}")
+            C_gen = info.get("C_gen")
+            C_loss = info.get("C_loss")
+            C_ov = info.get("C_ov")
+            total_cost = info.get("total_cost")
+            diverge_penalty = info.get("diverge_penalty", 0.0) if not info.get("converged", True) else 0.0
+            slack_P = info.get("slack_P")
+            slack_cost = info.get("slack_cost")
+
+            print(
+                f"[{datetime.now().strftime('%H:%M:%S')}] Ep {ep + 1}/{args.max_episodes} | "
+                f"Reward={float(ep_ret):.3f} | "
+                f"A(C_gen)={None if C_gen is None else f'{C_gen:.3f}'} | "
+                f"B(C_loss)={None if C_loss is None else f'{C_loss:.3f}'} | "
+                f"C(C_ov)={None if C_ov is None else f'{C_ov:.3f}'} | "
+                f"diverge_penalty={diverge_penalty:.3f} | "
+                f"slack_P={None if slack_P is None else f'{slack_P:.3f}'} | "
+                f"slack_cost={None if slack_cost is None else f'{slack_cost:.3f}'} | "
+                f"Vm[min,max]=({info.get('Vm_min', None):.3f},{info.get('Vm_max', None):.3f}) | "
+                f"branch_loading_max={info.get('branch_loading_pct_max', None):.1f}%"
+            )
 
         if args.save_every and (ep + 1) % args.save_every == 0:
             ckpt_path = os.path.join(args.log_dir, f"sac_ep{ep+1}.pt")
@@ -309,6 +326,7 @@ def train(args):
             with open(os.path.join(args.log_dir, "spec.json"), "w", encoding="utf-8") as jf:
                 json.dump(spec, jf, indent=2)
             print(f"[Save] Checkpoint: {ckpt_path}")
+
 
     # 最后存一次
     if args.final_ckpt:
