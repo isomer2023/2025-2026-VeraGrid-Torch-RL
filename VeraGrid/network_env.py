@@ -339,8 +339,8 @@ class GridOPFEnv:
         C_ov = self.lambda_overload * float(np.sum(over ** 2))
 
         # 6) 奖励
-        total_cost = C_gen + C_loss + C_ov
-        reward = - total_cost*0.001
+        total_cost = C_gen/1000 + C_loss + C_ov/500
+        reward = - total_cost
 
         # 7) 观测（不重采样，只把限额写回）
         self._rewrite_pv_wt_limits_only()
