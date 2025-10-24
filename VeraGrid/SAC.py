@@ -345,7 +345,7 @@ def parse_args():
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--device", type=str, default=None)
 
-    ap.add_argument("--max_episodes", type=int, default=400)
+    ap.add_argument("--max_episodes", type=int, default=40000)
     ap.add_argument("--start_random_eps", type=int, default=50)
     ap.add_argument("--update_after", type=int, default=50)
     ap.add_argument("--update_every", type=int, default=10)
