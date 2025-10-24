@@ -3,57 +3,9 @@ from __future__ import annotations
 import numpy as np
 import VeraGridEngine.api as gce
 import VeraGridEngine.enumerations as en
-import GC_PandaPowerImporter as GC_PandaPowerImporter
-
-
-def load_case14_as_veragrid(run_pp_before=True, sanitize=True, set_line_rate_100=True):
-    import pandapower as pp
-    import pandapower.networks as nw
-    import numpy as np
-    import GC_PandaPowerImporter as GC_PandaPowerImporter
-
-    net_pp = nw.case14()
-
-    # 放宽 PP 侧电压上限，避免 vm_pu > max_vm_pu 告警
-    net_pp.bus["max_vm_pu"] = np.maximum(net_pp.bus.get("max_vm_pu", 1.05), 1.06)
-
-    # ✅ 关键：先在 PP 侧跑一次潮流，用 flat 初始化，生成 res_* 表
-    if run_pp_before:
-        try:
-            pp.runpp(net_pp, algorithm="nr", init="flat")
-        except Exception as e:
-            print("pandapower runpp 失败：", e)
-
-    # 转 VeraGrid
-    grid_gc = GC_PandaPowerImporter.PP2GC(net_pp)
-
-    # 清洗
-    if sanitize:
-        for b in grid_gc.buses:
-            b.Vmin, b.Vmax = 0.95, 1.05
-        for g in grid_gc.generators:
-            g.Vset = min(max(g.Vset, 0.95), 1.03)
-
-    # 统一线路额定 100 MVA（loading% 计算用）
-    if set_line_rate_100:
-        for ln in grid_gc.lines:
-            ln.rate = 100.0
-
-    return net_pp, grid_gc
-
-
-def get_bus_by_name(grid_gc, bus_name: str | int):
-    key = str(bus_name)
-    for b in grid_gc.buses:
-        if b.name == key:
-            return b
-    raise ValueError(f"Bus {bus_name} not found")
-
-
-def get_generators_at_bus(grid_gc, bus_name: str | int):
-    b = get_bus_by_name(grid_gc, bus_name)
-    return [g for g in grid_gc.generators if g.bus is b]
-
+import src.GC_PandaPowerImporter as GC_PandaPowerImporter
+import src.network_loader as net_loader
+import src.grid_utils as g_utils
 
 # -------------------------------------------
 # 环境：GridOPFEnv（模仿最优 + 约束校验）
@@ -70,7 +22,7 @@ class GridOPFEnv:
                  lambda_diverge=50.0,      # 不收敛惩罚
                  seed=None):
 
-        self.base_net, self.base_grid = load_case14_as_veragrid(
+        self.base_net, self.base_grid = net_loader.load_network(
             run_pp_before=True, sanitize=True, set_line_rate_100=True
         )
         self.rng = np.random.default_rng(seed)
@@ -124,11 +76,11 @@ class GridOPFEnv:
             return float(max(lo, min(hi, x)))
 
         # 获取机组对象
-        g1 = get_generators_at_bus(self.grid, self.thermal_buses[0])[0]
-        g2 = get_generators_at_bus(self.grid, self.thermal_buses[1])[0]
-        g3 = get_generators_at_bus(self.grid, self.thermal_buses[2])[0]
-        g6 = get_generators_at_bus(self.grid, self.pv_bus)[0]
-        g8 = get_generators_at_bus(self.grid, self.wt_bus)[0]
+        g1 = g_utils.get_generators_at_bus(self.grid, self.thermal_buses[0])[0]
+        g2 = g_utils.get_generators_at_bus(self.grid, self.thermal_buses[1])[0]
+        g3 = g_utils.get_generators_at_bus(self.grid, self.thermal_buses[2])[0]
+        g6 = g_utils.get_generators_at_bus(self.grid, self.pv_bus)[0]
+        g8 = g_utils.get_generators_at_bus(self.grid, self.wt_bus)[0]
 
         # 火电锁指令
         (lo1, hi1), (lo2, hi2), (lo3, hi3) = self.th_limits
@@ -156,8 +108,8 @@ class GridOPFEnv:
         self.wt_pmax_rand = 50.0 * self.rng.uniform(*self.wt_range)
 
         # 写到机组上（用于 OPF 上限）
-        g6 = get_generators_at_bus(self.grid, self.pv_bus)[0]
-        g8 = get_generators_at_bus(self.grid, self.wt_bus)[0]
+        g6 = g_utils.get_generators_at_bus(self.grid, self.pv_bus)[0]
+        g8 = g_utils.get_generators_at_bus(self.grid, self.wt_bus)[0]
         g6.Pmin, g6.Pmax = 0.0, self.pv_pmax_rand + 1e-10
         g8.Pmin, g8.Pmax = 0.0, self.wt_pmax_rand + 1e-10
         g6.Cost, g6.Cost2 = 2.0, 0.0
@@ -178,9 +130,9 @@ class GridOPFEnv:
     # ---------- OPF（求最优 a*） ----------
     def _run_ac_opf(self):
         # 设置火电成本与限额
-        g1 = get_generators_at_bus(self.grid, self.thermal_buses[0])[0]
-        g2 = get_generators_at_bus(self.grid, self.thermal_buses[1])[0]
-        g3 = get_generators_at_bus(self.grid, self.thermal_buses[2])[0]
+        g1 = g_utils.get_generators_at_bus(self.grid, self.thermal_buses[0])[0]
+        g2 = g_utils.get_generators_at_bus(self.grid, self.thermal_buses[1])[0]
+        g3 = g_utils.get_generators_at_bus(self.grid, self.thermal_buses[2])[0]
         g1.Pmin, g1.Pmax = self.th_limits[0][0], self.th_limits[0][1] + 1e-10
         g2.Pmin, g2.Pmax = self.th_limits[1][0], self.th_limits[1][1] + 1e-10
         g3.Pmin, g3.Pmax = self.th_limits[2][0], self.th_limits[2][1] + 1e-10
@@ -238,7 +190,7 @@ class GridOPFEnv:
             self.rng = np.random.default_rng(seed)
 
         # 复制基网
-        _, self.grid = load_case14_as_veragrid(run_pp_before=True, sanitize=True, set_line_rate_100=True)
+        _, self.grid = net_loader.load_network(run_pp_before=True, sanitize=True, set_line_rate_100=True)
 
         # 每回合：随机风/光、随机负荷
         self._randomize_pv_wt()
@@ -263,11 +215,11 @@ class GridOPFEnv:
         opf_genP = np.array(ac_opf.results.generator_power, dtype=float)  # 所有机组
 
         # 只抽取 (th1, th2, th3, pv, wt) 顺序的 a*
-        g1 = get_generators_at_bus(self.grid, self.thermal_buses[0])[0]
-        g2 = get_generators_at_bus(self.grid, self.thermal_buses[1])[0]
-        g3 = get_generators_at_bus(self.grid, self.thermal_buses[2])[0]
-        g6 = get_generators_at_bus(self.grid, self.pv_bus)[0]
-        g8 = get_generators_at_bus(self.grid, self.wt_bus)[0]
+        g1 = g_utils.get_generators_at_bus(self.grid, self.thermal_buses[0])[0]
+        g2 = g_utils.get_generators_at_bus(self.grid, self.thermal_buses[1])[0]
+        g3 = g_utils.get_generators_at_bus(self.grid, self.thermal_buses[2])[0]
+        g6 = g_utils.get_generators_at_bus(self.grid, self.pv_bus)[0]
+        g8 = g_utils.get_generators_at_bus(self.grid, self.wt_bus)[0]
         idx_map = [self.grid.generators.index(g1),
                    self.grid.generators.index(g2),
                    self.grid.generators.index(g3),
@@ -354,7 +306,7 @@ __all__ = [
     "GridOPFEnv",
     "make_env",
     "get_env_spec",
-    "load_case14_as_veragrid",
-    "get_bus_by_name",
-    "get_generators_at_bus",
+    #"load_case14_as_veragrid",
+    #"get_bus_by_name",
+    #"get_generators_at_bus",
 ]
