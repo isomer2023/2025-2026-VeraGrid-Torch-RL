@@ -93,15 +93,10 @@ class SquashedGaussianMLPActor(nn.Module):
         if with_logprob:
             # log p(u) under the Gaussian
             logp_u = dist.log_prob(u).sum(dim=-1)  # (batch,)
-
-            # log|det(d a_scaled / du)|
-            #   = sum_i [ log(act_limit) + log(1 - tanh(u_i)^2) ]
-            # add small epsilon for numerical stability
             eps = 1e-6
             log_act_limit = torch.log(
                 torch.tensor(self.act_limit, device=obs.device)
             )
-            # shape (batch, act_dim) -> sum over act_dim
             log_jac = (log_act_limit + torch.log(1 - a_tanh.pow(2) + eps)).sum(dim=-1)
 
             # final corrected log prob of the *squashed+scaled* action
@@ -233,10 +228,6 @@ class SACAgent:
         self.log_alpha = torch.tensor(ckpt["log_alpha"], requires_grad=True, device=self.device)
         self.alpha = self.log_alpha.exp().item()
 
-
-# ------------------
-# 评测（5个场景）
-# ------------------
 def evaluate_5(env, agent, out_csv):
     seeds = [11, 22, 33, 44, 55]
     with open(out_csv, "w", newline="", encoding="utf-8") as f:
@@ -264,14 +255,9 @@ def evaluate_5(env, agent, out_csv):
             ])
     print(f"[Eval] 5-scenario results saved to: {out_csv}")
 
-
-# ------------------
-# 训练主流程
-# ------------------
 def train(args):
     os.makedirs(args.log_dir, exist_ok=True)
 
-    # 读环境规格 & 创建环境
     spec = net.get_env_spec(seed=args.seed)
     obs_dim   = spec["state_dim"]
     act_dim   = spec["action_dim"]
@@ -279,7 +265,6 @@ def train(args):
 
     env = net.make_env(seed=args.seed)
 
-    # Agent & Buffer
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     agent = SACAgent(obs_dim, act_dim, act_limit,
                      hidden_sizes=(args.h1, args.h2),
@@ -293,12 +278,10 @@ def train(args):
 
     buf = ReplayBuffer(obs_dim, act_dim, size=args.replay_size)
 
-    # 日志
     rewards_csv = os.path.join(args.log_dir, "episode_rewards.csv")
     with open(rewards_csv, "w", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow(["episode", "total_reward"])
 
-    # 训练（单步任务：每回合一步）
     o = env.reset(seed=args.seed)
     for ep in range(args.max_episodes):
         if ep < args.start_random_eps:
@@ -309,8 +292,8 @@ def train(args):
         o2, r, d, info = env.step(a)
         a_used = np.array(info["action"], dtype=np.float32)
         buf.store(o, a_used, r, o2, d)
-
-        o = env.reset()  # 开下一个回合（单步任务）
+        ep_ret = r
+        o = env.reset()
 
         if ep >= args.update_after and (ep - args.update_after) % args.update_every == 0:
             for _ in range(args.update_every):
