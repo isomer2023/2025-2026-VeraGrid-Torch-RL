@@ -74,24 +74,46 @@ class SquashedGaussianMLPActor(nn.Module):
     def forward(self, obs, deterministic=False, with_logprob=True):
         h = self.net(obs)
         mu = self.mu_layer(h)
+
         log_std = torch.clamp(self.log_std_layer(h), LOG_STD_MIN, LOG_STD_MAX)
         std = torch.exp(log_std)
 
         dist = torch.distributions.Normal(mu, std)
-        pi_action = mu if deterministic else dist.rsample()
+
+        # sample in pre-tanh space
+        u = mu if deterministic else dist.rsample()   # (batch, act_dim)
+
+        # squash to (-1,1)
+        a_tanh = torch.tanh(u)
+
+        # scale to [-act_limit, act_limit]
+        pi_action = a_tanh * self.act_limit
 
         logp_pi = None
         if with_logprob:
-            logp_pi = dist.log_prob(pi_action).sum(dim=-1)
+            # log p(u) under the Gaussian
+            logp_u = dist.log_prob(u).sum(dim=-1)  # (batch,)
 
-        # tanh squash & scale
-        pi_action = torch.tanh(pi_action) * self.act_limit  # [-act_limit, act_limit]
+            # log|det(d a_scaled / du)|
+            #   = sum_i [ log(act_limit) + log(1 - tanh(u_i)^2) ]
+            # add small epsilon for numerical stability
+            eps = 1e-6
+            log_act_limit = torch.log(
+                torch.tensor(self.act_limit, device=obs.device)
+            )
+            # shape (batch, act_dim) -> sum over act_dim
+            log_jac = (log_act_limit + torch.log(1 - a_tanh.pow(2) + eps)).sum(dim=-1)
+
+            # final corrected log prob of the *squashed+scaled* action
+            logp_pi = logp_u - log_jac
+
         return pi_action, logp_pi
 
     @torch.no_grad()
     def act(self, obs, deterministic=False):
         a, _ = self.forward(obs, deterministic, with_logprob=False)
         return a.cpu().numpy()
+
 
 
 class MLPQFunction(nn.Module):
@@ -285,8 +307,8 @@ def train(args):
             a = agent.select_action(o, deterministic=False)
 
         o2, r, d, info = env.step(a)
-        buf.store(o, a, r, o2, d)
-        ep_ret = r
+        a_used = np.array(info["action"], dtype=np.float32)
+        buf.store(o, a_used, r, o2, d)
 
         o = env.reset()  # 开下一个回合（单步任务）
 
