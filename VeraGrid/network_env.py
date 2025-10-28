@@ -419,24 +419,6 @@ class GridOPFEnv:
         return self._build_obs()
 
     def step(self, action: np.ndarray):
-        """
-        单步任务：
-          - 应用 agent 动作（钉死四台机组出力）
-          - 跑潮流
-          - 如果潮流不收敛 → 巨罚直接终止
-          - 如果收敛 → 计算成本、损耗、线路过载惩罚
-          - reward = - total_cost
-          - done=True（单步）
-
-        新增：
-          - 使用 VeraGrid 的 pf.results.loading 和 get_branches()，
-            稳定打印每条支路的:
-              from_bus -> to_bus,
-              实际流量 MVA (估算),
-              额定容量 rate MVA,
-              loading %
-          - 把这些信息塞进 info["line_monitor"]
-        """
 
         action = np.asarray(action, dtype=float).copy()
         assert action.shape[0] == 4, "action 维度应为 4（Bus2/3 + PV + WT）"
@@ -525,22 +507,7 @@ class GridOPFEnv:
         # 线损惩罚
         C_loss = self.lambda_loss * P_loss
 
-        # =====================
-        # 线路过载惩罚 & 打印线路利用率
-        # =====================
 
-        # VeraGrid 自己在 PowerFlowDriver.add_report() 里这样写：
-        #   loading = np.abs(self.results.loading)
-        #   branches = self.grid.get_branches(add_vsc=False, add_hvdc=False, add_switch=True)
-        #   for i, branch in enumerate(branches):
-        #       if loading[i] > 1.0: ...
-        #
-        # 这说明:
-        #   - pf.results.loading[i] 和 branches[i] 是一一对应的
-        #   - loading 是 per-branch 的 MVA/MW 占额定容量的比例(p.u.)
-        #
-        # 所以我们不再猜 branch_df，也不再假设顺序。
-        # 我们直接用这对齐关系来构建 line_monitor。
 
         branches = self.grid.get_branches(add_vsc=False, add_hvdc=False, add_switch=True)
         loading_arr = np.abs(pf.results.loading)  # shape == len(branches)
