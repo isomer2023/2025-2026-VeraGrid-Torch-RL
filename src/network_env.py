@@ -7,9 +7,7 @@ import src.GC_PandaPowerImporter as GC_PandaPowerImporter
 import src.network_loader as net_loader
 import src.grid_utils as g_utils
 
-# -------------------------------------------
-# 环境：GridOPFEnv（模仿最优 + 约束校验）
-# -------------------------------------------
+
 class GridOPFEnv:
 
     RECOMMENDED_ACT_LIMIT = 200.0

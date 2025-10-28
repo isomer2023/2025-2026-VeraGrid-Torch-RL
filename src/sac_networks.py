@@ -25,10 +25,33 @@ class SquashedGaussianMLPActor(nn.Module):
         std = torch.exp(log_std)
 
         dist = torch.distributions.Normal(mu, std)
-        pi_action = mu if deterministic else dist.rsample()
+        #pi_action = mu if deterministic else dist.rsample()
 
-        logp_pi = dist.log_prob(pi_action).sum(dim=-1) if with_logprob else None
-        pi_action = torch.tanh(pi_action) * self.act_limit
+        #logp_pi = dist.log_prob(pi_action).sum(dim=-1) if with_logprob else None
+        #pi_action = torch.tanh(pi_action) * self.act_limit
+
+        # sample in pre-tanh space
+        u = mu if deterministic else dist.rsample()   # (batch, act_dim)
+
+        # squash to (-1,1)
+        a_tanh = torch.tanh(u)
+
+        # scale to [-act_limit, act_limit]
+        pi_action = a_tanh * self.act_limit
+
+        logp_pi = None
+        if with_logprob:
+            # log p(u) under the Gaussian
+            logp_u = dist.log_prob(u).sum(dim=-1)  # (batch,)
+            eps = 1e-6
+            log_act_limit = torch.log(
+                torch.tensor(self.act_limit, device=obs.device)
+            )
+            log_jac = (log_act_limit + torch.log(1 - a_tanh.pow(2) + eps)).sum(dim=-1)
+
+            # final corrected log prob of the *squashed+scaled* action
+            logp_pi = logp_u - log_jac
+
         return pi_action, logp_pi
 
     @torch.no_grad()

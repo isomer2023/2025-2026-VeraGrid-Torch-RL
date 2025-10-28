@@ -109,7 +109,8 @@ def train(args, env_module):
 
         # 与环境交互（单步）
         o2, r, d, info = env.step(a)
-        buf.store(o, a, r, o2, d)
+        a_used = np.array(info["action"], dtype=np.float32)
+        buf.store(o, a_used, r, o2, d)
         ep_ret = r
         o = env.reset()  # 每回合一步，直接 reset
 
