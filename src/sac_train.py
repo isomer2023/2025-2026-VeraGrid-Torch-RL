@@ -8,14 +8,14 @@ import csv
 import json
 from datetime import datetime
 import numpy as np
-import torch  # <----- 修正：导入 torch
+import torch
 
 from src.sac_buffer import ReplayBuffer
 from src.sac_agent import SACAgent
 
 
 # ------------------------------
-# 评测（5个随机场景）
+# sac_train.py
 # ------------------------------
 def evaluate_5(env, agent, out_csv: str):
     """固定5个随机种子场景评估智能体性能"""

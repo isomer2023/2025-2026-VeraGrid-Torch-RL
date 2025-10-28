@@ -1,3 +1,4 @@
+# network_loader.py
 import numpy as np
 import pandapower as pp
 import pandapower.networks as nw
@@ -9,10 +10,11 @@ def set_line_limits_auto(grid_gc, k_scale=0.8, margin=1.25):
     """Line rate automatically set, based on simple impedance / PF, adapt to any network."""
     # imp
     for ln in grid_gc.lines:
-        V = getattr(ln.bus_from, "Vnom", 110.0)
+        V = getattr(ln.bus_from, "Vnom", getattr(ln.bus_to, "Vnom", 110.0))# prevent no bus_from
         R, X = ln.R, ln.X
         Z = max((R**2 + X**2)**0.5, 1e-6)
         ln.rate = k_scale * (V**2 / Z)
+        ln.rate = min(ln.rate, 1000.0)  # prevent unlimited rate
 
     # PF
     try:
@@ -39,7 +41,7 @@ def load_network(name="case14", run_pp_before=True, sanitize=True, set_line_rate
     else:
         raise ValueError(f"Unsupported network: {name}")
 
-    net_pp.bus["max_vm_pu"] = np.maximum(net_pp.bus.get("max_vm_pu", 1.08), 1.1)
+    net_pp.bus["max_vm_pu"] = np.maximum(net_pp.bus.get("max_vm_pu", 1.08), 1.09)# 1.05,1.06
     if run_pp_before:
         try:
             pp.runpp(net_pp, algorithm="nr", init="flat")
