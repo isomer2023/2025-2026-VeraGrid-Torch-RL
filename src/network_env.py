@@ -177,6 +177,15 @@ class GridOPFEnv:
         )
         pf.run()
         self.last_pf = pf
+        # 如果收敛，把结果写回 grid（确保 branches/buses 上的属性被填充）
+        try:
+            if pf.results.converged and hasattr(pf.results, "apply_to_grid"):
+                # 把结果应用到 grid，以便后续读取 branch.rate, branch.loading 等属性
+                pf.results.apply_to_grid(self.grid)
+        except Exception:
+            # 不要让写回失败中断训练，只记录调试信息
+            if getattr(self, "verbose", False):
+                print("[WARN] pf.results.apply_to_grid failed or not available.")
         return pf
 
     def _build_obs(self):
@@ -290,7 +299,7 @@ class GridOPFEnv:
             self._compute_line_monitor(pf)
 
         # 5️⃣ 总成本与奖励
-        total_cost = gen_cost / 1000.0 + loss_cost + overload_penalty / 500.0
+        total_cost = gen_cost / 1000 + loss_cost + overload_penalty / 500
         reward = -float(total_cost)
 
         # 6️⃣ 恢复 PV/WT 上限
@@ -347,12 +356,13 @@ class GridOPFEnv:
         ctrl_buses = [self.thermal_buses[0], self.thermal_buses[1],
                       self.pv_bus, self.wt_bus]  # 2,3,6,8
 
-        # 控制机组成本
+        # 控制机组成本（只对正发电计费）
         for i, bus in enumerate(ctrl_buses):
             g = g_utils.get_generators_at_bus(self.grid, bus)[0]
             P = float(act_used[i])
+            P_pos = max(0.0, P)
             c1, c2 = float(getattr(g, "Cost", 0.0)), float(getattr(g, "Cost2", 0.0))
-            cost_i = c1 * P + c2 * (P ** 2)
+            cost_i = c1 * P_pos + c2 * (P_pos ** 2)
             C_gen += cost_i
             per_gen.append({
                 "name": getattr(g, "name", f"gen_bus{bus}"),
@@ -366,12 +376,13 @@ class GridOPFEnv:
         S_tot = np.asarray(pf.results.losses).sum()
         P_loss = float(np.real(S_tot))
         P_known = float(np.sum(act_used))
-        P_slack = P_load + P_loss - P_known
-
-        # Slack 成本
         g_slack = g_utils.get_generators_at_bus(self.grid, self.slack_bus)[0]
+
+        # slack 发电量 P_slack = (P_load + P_loss - P_known)
+        P_slack = P_load + P_loss - P_known
+        P_slack_pos = max(0.0, P_slack)  # 只计正值为发电
         c1_s, c2_s = float(getattr(g_slack, "Cost", 60.0)), float(getattr(g_slack, "Cost2", 0.0))
-        slack_cost = c1_s * P_slack + c2_s * (P_slack ** 2)
+        slack_cost = c1_s * P_slack_pos + c2_s * (P_slack_pos ** 2)
         C_gen += slack_cost
         per_gen.append({
             "name": getattr(g_slack, "name", "slack_bus1"),
@@ -383,39 +394,79 @@ class GridOPFEnv:
         return C_gen, slack_cost, C_loss, P_slack, P_loss, per_gen
 
     def _compute_line_monitor(self, pf):
-        """根据 VeraGrid 的 results.loading 输出线路监控与过载惩罚"""
-        branches = self.grid.get_branches(add_vsc=False, add_hvdc=False, add_switch=True)
-        loading_arr = np.abs(pf.results.loading)
-        line_monitor, overload_penalty_sum, max_loading_pct = [], 0.0, 0.0
+        """根据 pf.results 获取线路监控。优先使用 branch_df(Pf,Qf)/rate 计算 loading。"""
+        # 尝试从 get_branch_df() 读取
+        line_monitor = []
+        overload_penalty_sum = 0.0
+        max_loading_pct = 0.0
 
-        if getattr(self, "verbose", True):
-            print("=== LINE MONITOR (aligned with VeraGrid results.loading) ===")
-            for i, br in enumerate(branches):
-                fb = getattr(getattr(br, "bus_from", None), "name", f"?{i}")
-                tb = getattr(getattr(br, "bus_to", None), "name", f"?{i}")
-                rate = float(getattr(br, "rate", np.nan))
-                ld_pu = float(loading_arr[i])
-                ld_pct = ld_pu * 100.0
-                flow_est = ld_pu * rate if not np.isnan(rate) else np.nan
-                max_loading_pct = max(max_loading_pct, ld_pct)
-                over = max(0.0, ld_pu - 1.0)
-                overload_penalty_sum += over ** 2
+        # 首先尝试用 branch_df（更普适）
+        try:
+            bdf = pf.results.get_branch_df().copy()
+            # 确保 Pf, Qf 列存在
+            if "Pf" in bdf.columns and "Qf" in bdf.columns:
+                # Ensure rate column
+                if "rate_MVA" not in bdf.columns:
+                    bdf["rate_MVA"] = [float(getattr(br, "rate", np.nan)) for br in
+                                       self.grid.get_branches(add_vsc=False, add_hvdc=False, add_switch=True)]
+                Pf = bdf["Pf"].astype(float).to_numpy()
+                Qf = bdf["Qf"].astype(float).to_numpy()
+                rate = bdf["rate_MVA"].astype(float).to_numpy()
+                loading_pu = np.hypot(Pf, Qf) / (rate + 1e-12)  # avoid div0
+                for i, br in enumerate(self.grid.get_branches(add_vsc=False, add_hvdc=False, add_switch=True)):
+                    fb = getattr(getattr(br, "bus_from", None), "name", f"?{i}")
+                    tb = getattr(getattr(br, "bus_to", None), "name", f"?{i}")
+                    ld_pu = float(loading_pu[i])
+                    ld_pct = ld_pu * 100.0
+                    flow_est = float(np.hypot(Pf[i], Qf[i]))
+                    max_loading_pct = max(max_loading_pct, ld_pct)
+                    over = max(0.0, ld_pu - 1.0)
+                    overload_penalty_sum += over ** 2
+                    line_info = {
+                        "idx": int(i), "from": fb, "to": tb,
+                        "rate_MVA": float(rate[i]),
+                        "flow_MVA_est": flow_est,
+                        "loading_pct": ld_pct,
+                        "type": type(br).__name__,
+                        "name": getattr(br, "name", f"branch_{i}"),
+                    }
+                    line_monitor.append(line_info)
+            else:
+                raise RuntimeError("branch_df lacks Pf/Qf")
+        except Exception:
+            # 兜底：尝试使用 pf.results.loading（如果存在）
+            try:
+                branches = self.grid.get_branches(add_vsc=False, add_hvdc=False, add_switch=True)
+                loading_arr = np.abs(getattr(pf.results, "loading", np.zeros(len(branches))))
+                for i, br in enumerate(branches):
+                    fb = getattr(getattr(br, "bus_from", None), "name", f"?{i}")
+                    tb = getattr(getattr(br, "bus_to", None), "name", f"?{i}")
+                    rate = float(getattr(br, "rate", np.nan))
+                    ld_pu = float(loading_arr[i]) if i < len(loading_arr) else 0.0
+                    ld_pct = ld_pu * 100.0
+                    flow_est = ld_pu * rate if not np.isnan(rate) else np.nan
+                    max_loading_pct = max(max_loading_pct, ld_pct)
+                    over = max(0.0, ld_pu - 1.0)
+                    overload_penalty_sum += over ** 2
+                    line_info = {
+                        "idx": int(i), "from": fb, "to": tb,
+                        "rate_MVA": rate, "flow_MVA_est": flow_est,
+                        "loading_pct": ld_pct, "type": type(br).__name__,
+                        "name": getattr(br, "name", f"branch_{i}"),
+                    }
+                    line_monitor.append(line_info)
+            except Exception as e:
+                if getattr(self, "verbose", False):
+                    print("[WARN] compute_line_monitor fallback failed:", e)
+                # leave empty list
 
-                line_info = {
-                    "idx": int(i),
-                    "from": fb, "to": tb,
-                    "rate_MVA": rate,
-                    "flow_MVA_est": flow_est,
-                    "loading_pct": ld_pct,
-                    "type": type(br).__name__,
-                    "name": getattr(br, "name", f"branch_{i}"),
-                }
-                line_monitor.append(line_info)
-
-
-                print(f"[{i:02d}] {fb} -> {tb}  "
-                          f"{flow_est:.2f} MVA / {rate:.2f} MVA  "
-                          f"({ld_pct:.1f}%)  {line_info['type']}  {line_info['name']}")
+        # 打印（受 verbose 控制）
+        if getattr(self, "verbose", False):
+            print("=== LINE MONITOR (computed) ===")
+            for li in line_monitor:
+                print(f"[{li['idx']:02d}] {li['from']} -> {li['to']}  "
+                      f"{li['flow_MVA_est']:.2f} MVA / {li['rate_MVA']:.2f} MVA  "
+                      f"({li['loading_pct']:.1f}%)  {li['type']}  {li['name']}")
             print("=== END LINE MONITOR ===")
 
         C_ov = self.lambda_overload * float(overload_penalty_sum)

@@ -9,14 +9,6 @@ import src.GC_PandaPowerImporter as GC_PandaPowerImporter
 def set_line_limits_auto(grid_gc, k_scale=0.8, margin=1.25):
     """Line rate automatically set, based on simple impedance / PF, adapt to any network."""
     # imp
-    for ln in grid_gc.lines:
-        V = getattr(ln.bus_from, "Vnom", getattr(ln.bus_to, "Vnom", 110.0))# prevent no bus_from
-        R, X = ln.R, ln.X
-        Z = max((R**2 + X**2)**0.5, 1e-6)
-        ln.rate = k_scale * (V**2 / Z)
-        ln.rate = min(ln.rate, 1000.0)  # prevent unlimited rate
-
-    # PF
     try:
         pf = gce.PowerFlowDriver(
             grid=grid_gc,
