@@ -21,7 +21,7 @@ def parse_args():
     ap.add_argument("--seed", type=int, default=42, help="随机种子")
 
     # parameters
-    ap.add_argument("--max_episodes", type=int, default=400, help="总训练回合数（每回合一步）")
+    ap.add_argument("--max_episodes", type=int, default=100, help="总训练回合数（每回合一步）")
     ap.add_argument("--start_random_eps", type=int, default=50, help="前多少回合使用随机动作探索")
     ap.add_argument("--update_after", type=int, default=50, help="从第多少回合后开始更新网络")
     ap.add_argument("--update_every", type=int, default=10, help="每多少回合执行一次多次更新")
