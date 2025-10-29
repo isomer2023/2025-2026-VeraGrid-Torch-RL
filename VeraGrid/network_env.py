@@ -1,6 +1,7 @@
 # ============================
 # network_env.py  —— PF 奖励版（Bus1 为 Slack，动作维度=4）
 # 线路容量 = 高可再生极端场景下的潮流 * 安全系数（固定不变）
+# 观测 = 随机化后各母线负荷 + 当期PV/WT上限（不依赖潮流结果）
 # ============================
 from __future__ import annotations
 import numpy as np
@@ -88,7 +89,7 @@ def _run_high_RE_scenario_once(
 ):
     """
     构造单个“高可再生场景”并跑潮流：
-      - 负荷按 load_stress_res 缩放 (例如 1.0 → 白天正常负荷)
+      - 负荷按 load_stress_res 缩放 (例如 1.1 → 偏高负荷)
       - 火电机组 (Bus2, Bus3) 拉到高值 (th2_set, th3_set)
       - 风光机组 (Bus6=PV, Bus8=WT) 拉到高值 (pv_set, wt_set)
       - Slack (Bus1) 不钉，自动平衡（可以负功率吸收多余绿电）
@@ -122,7 +123,7 @@ def _run_high_RE_scenario_once(
     if g8 is not None:
         _pin_gen_power(g8, wt_set)
 
-    # Slack 不pin → 让它自然成为“外部大电网”，吃掉多余发电
+    # Slack 不 pin → 让它自然作为平衡机组
 
     pf_tmp = gce.PowerFlowDriver(
         grid=gtmp,
@@ -146,7 +147,7 @@ def compute_static_branch_limits_high_RE(
     th3_max=80.0,
     pv_max_possible=36.0,     # ~ 40 * 0.90 (pv_range max)
     wt_max_possible=47.5,     # ~ 50 * 0.95 (wt_range max)
-    load_stress_res=1.0,      # 白天/高可再生时的典型负荷水平
+    load_stress_res=1.1,      # 稍高一点的负荷水平来定容量
     safety_factor=1.2,
     floor_MVA=5.0,
 ):
@@ -157,7 +158,7 @@ def compute_static_branch_limits_high_RE(
       1. 按给定工况跑潮流：
          - 火电在高出力 (th2_max, th3_max)
          - 风光在高出力 (pv_max_possible, wt_max_possible)
-         - 负荷在中午/白天水平 (load_stress_res)
+         - 负荷在较高水平 (load_stress_res)
          - Slack 吸收/外送多余功率
       2. 对每条线取 |S| (MVA)
       3. 线路容量 = max(floor_MVA, safety_factor * |S|)
@@ -224,7 +225,7 @@ class GridOPFEnv:
         self.pv_range = pv_range
         self.wt_range = wt_range
 
-        # 负荷扰动强度：N(1, load_jitter) 后截断到 [0.8,1.2]
+        # 负荷扰动强度：N(1, load_jitter) 后截断到 [0.8,1.1]
         self.load_jitter = float(load_jitter)
 
         # reward 系数
@@ -233,15 +234,16 @@ class GridOPFEnv:
         self.lambda_diverge = float(lambda_diverge)
 
         # 观测、动作维度
+        # state = [bus1_load,...,bus14_load, pv_cap, wt_cap]
         self.action_dim = 4
-        self.state_dim = 14 + 2  # 14个bus需求 + [pv_cap, wt_cap]
+        self.state_dim = 14 + 2
 
         # 运行时变量
         self.grid = None
         self.pv_pmax_rand = None
         self.wt_pmax_rand = None
         self.load_scale = None
-        self.last_pf = None
+        self.last_pf = None  # 只在 step() 后reward用
 
         # === 固定线路热限 (单一高可再生产景推出来) ===
         pv_max_possible = 40.0 * max(self.pv_range)   # e.g. 40 * 0.90 = 36 MW
@@ -253,8 +255,8 @@ class GridOPFEnv:
             th3_max=self.th_limits[1][1],        # 80.0
             pv_max_possible=pv_max_possible,     # ~36 MW
             wt_max_possible=wt_max_possible,     # ~47.5 MW
-            load_stress_res=1.0,                 # 假设白天负荷大约正常水平
-            safety_factor=1.2,                   # 给线路留20%裕度
+            load_stress_res=1.1,                 # 用稍高负荷去定额定容量
+            safety_factor=1.2,                   # 留20%裕度
             floor_MVA=5.0,
         )
 
@@ -305,10 +307,11 @@ class GridOPFEnv:
 
     def _randomize_loads(self):
         """
-        给所有负荷乘一个随机系数 (clip到[0.8,1.2])，模拟一天的负荷波动。
+        给所有负荷乘一个随机系数 (clip到[0.8,1.1])，模拟系统高/低负荷时段。
         """
         self.load_scale = float(self.rng.normal(1.0, self.load_jitter))
-        self.load_scale = max(0.8, min(1.2, self.load_scale))
+        # clip：你说的“抽0.8-1.1就行”
+        self.load_scale = max(0.8, min(1.1, self.load_scale))
 
         for ld in self.grid.loads:
             ld.P *= self.load_scale
@@ -356,26 +359,35 @@ class GridOPFEnv:
 
     def _build_obs(self):
         """
-        观测：
-          - 每个母线的“需求侧功率”（负荷为正，发电母线为0），长度14
+        观测向量 (state):
+          - 随机化后的母线有功负荷 (MW, 正数)，按 bus1..bus14 顺序；
+            没负荷的母线给 0。
           - 当前 episode 的 [pv_pmax_rand, wt_pmax_rand]
+
+        注意：这里不跑潮流，不看 pf.results。观测是“需求场景”，
+        action 决定发电，潮流只在 step() 里用于打分。
         """
-        pf = self.last_pf or self._run_pf()
-        bus_df = pf.results.get_bus_df()
 
-        p_col = np.array(bus_df["P"].values, dtype=float)
-        # 对于母线功率注入P<0表示负荷，把它翻正；发电(>0)直接视为0
-        demand_like = np.where(p_col < 0.0, -p_col, 0.0)
+        # 1. 按母线聚合当前 self.grid 里的负荷 (这些负荷已经被 _randomize_loads() 缩放过了)
+        demand_map = {}
+        for ld in self.grid.loads:
+            bus_name = str(ld.bus.name)
+            P_load = float(getattr(ld, "P", 0.0))
+            demand_map[bus_name] = demand_map.get(bus_name, 0.0) + P_load
 
-        # 对齐到14维（case14）
-        if demand_like.shape[0] < 14:
-            demand_like = np.pad(demand_like, (0, 14 - demand_like.shape[0]))
-        elif demand_like.shape[0] > 14:
-            demand_like = demand_like[:14]
+        # 2. 生成长度14的向量 [bus1,...,bus14]，无负荷母线=0
+        demand_vec = []
+        for bus_idx in range(1, 15):  # 1..14
+            val = demand_map.get(str(bus_idx), 0.0)
+            demand_vec.append(val)
 
-        obs = np.concatenate(
-            [demand_like, [self.pv_pmax_rand, self.wt_pmax_rand]]
-        ).astype(np.float32)
+        demand_vec = np.array(demand_vec, dtype=float)
+
+        # 3. 拼上当期风光最大可发
+        obs = np.concatenate([
+            demand_vec,
+            [self.pv_pmax_rand, self.wt_pmax_rand],
+        ]).astype(np.float32)
 
         return obs
 
@@ -385,9 +397,9 @@ class GridOPFEnv:
           1. 拷贝 base_grid
           2. 设置成本/电压上限
           3. 随机 PV/WT 上限
-          4. 随机负荷
+          4. 随机负荷 (全网统一scale)
           5. 把固定线路上限写入 ln.rate
-          6. 跑潮流
+          6. 不需要先跑潮流来生成观测
           7. 返回观测
         """
         if seed is not None:
@@ -409,17 +421,25 @@ class GridOPFEnv:
         for ln, cap in zip(self.grid.lines, self.static_line_limits):
             ln.rate = float(cap)
 
-        # 6. 求潮流
+        # 6. 这里可以不跑潮流来生成obs，
+        #    但我们可以提前算一次潮流放在 self.last_pf 里，方便 debug/step()
         self._run_pf()
 
-        # debug 打印机组信息（可保留也可注释）
+        # debug 打印机组信息（可注释掉）
         self.debug_print_generators()
 
-        # 7. 返回观察
+        # 7. 返回观察（基于随机负荷+风光cap，不依赖潮流结果）
         return self._build_obs()
 
     def step(self, action: np.ndarray):
-
+        """
+        单步任务：
+          - 用 action 钉住4台机组的出力
+          - Slack 自动补
+          - 跑潮流
+          - 根据成本 + 网损 + 线路过载 + 潮流可行性 给 reward
+          - done=True
+        """
         action = np.asarray(action, dtype=float).copy()
         assert action.shape[0] == 4, "action 维度应为 4（Bus2/3 + PV + WT）"
 
@@ -483,7 +503,6 @@ class GridOPFEnv:
         P_load = float(-np.sum(P_bus[P_bus < 0.0]))
 
         # 网损 (MW)：pf.results.losses 是 per-branch 复功率(?)，之前我们用 sum(real(losses))
-        # VeraGrid 里 pf.results.losses 是数组 (MVA per branch)；我们继续用之前定义的逻辑：
         S_tot = np.asarray(pf.results.losses).sum()
         P_loss = float(np.real(S_tot))
 
@@ -507,8 +526,7 @@ class GridOPFEnv:
         # 线损惩罚
         C_loss = self.lambda_loss * P_loss
 
-
-
+        # ========== 线路载荷与过载惩罚 ==========
         branches = self.grid.get_branches(add_vsc=False, add_hvdc=False, add_switch=True)
         loading_arr = np.abs(pf.results.loading)  # shape == len(branches)
 
@@ -521,17 +539,16 @@ class GridOPFEnv:
             fb = getattr(getattr(br, "bus_from", None), "name", f"?{i}")
             tb = getattr(getattr(br, "bus_to", None), "name", f"?{i}")
 
-            # 热限 (MVA 或 MW, 取决于 AC/DC, 但对loading是统一的基准)
-            rate = float(getattr(br, "rate", np.nan))
+            # 热限 (MVA)
+            rate_val = float(getattr(br, "rate", np.nan))
 
             # loading p.u. -> 百分比
             ld_pu = float(loading_arr[i])  # 1.20 表示 120%
             ld_pct = ld_pu * 100.0
 
             # 估算当前分支流量 "实际MVA" = loading_pu * 额定容量
-            # 这是合理的：loading = |S_now| / rate
-            if rate is not None and not np.isnan(rate):
-                flow_est = ld_pu * rate
+            if rate_val is not None and not np.isnan(rate_val):
+                flow_est = ld_pu * rate_val
             else:
                 flow_est = np.nan
 
@@ -547,7 +564,7 @@ class GridOPFEnv:
                 "idx": int(i),
                 "from": fb,
                 "to": tb,
-                "rate_MVA": rate,
+                "rate_MVA": rate_val,
                 "flow_MVA_est": flow_est,
                 "loading_pct": ld_pct,
                 "type": type(br).__name__,
@@ -555,7 +572,7 @@ class GridOPFEnv:
             }
             line_monitor_list.append(line_info)
 
-        # 控制台打印
+        # 调试输出
         print("=== LINE MONITOR (this step, aligned with VeraGrid results.loading) ===")
         for li in line_monitor_list:
             print(
@@ -566,7 +583,7 @@ class GridOPFEnv:
             )
         print("=== END LINE MONITOR ===")
 
-        # 线路过载惩罚项 C_ov：我们沿用之前的系数，但现在用 VeraGrid 的 loading 结果
+        # 线路过载惩罚项
         C_ov = self.lambda_overload * float(overload_penalty_sum)
 
         # =====================
@@ -606,7 +623,7 @@ class GridOPFEnv:
             "load_scale": float(self.load_scale),
             "per_generator": per_gen,
 
-            # 我们现在放的是对齐后的线路状态（idx 是和 results.loading 对齐的）
+            # 每条线的当前loading信息（索引与 pf.results.loading 对齐）
             "line_monitor": line_monitor_list,
         })
 

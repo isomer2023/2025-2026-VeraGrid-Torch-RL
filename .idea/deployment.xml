@@ -9,6 +9,20 @@
           </mappings>
         </serverdata>
       </paths>
+      <paths name="root@connect.bjb1.seetacloud.com:17772 password">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="root@connect.bjb1.seetacloud.com:23157 password">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
       <paths name="root@connect.bjb1.seetacloud.com:23348 password">
         <serverdata>
           <mappings>
