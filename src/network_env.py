@@ -388,7 +388,7 @@ class GridOPFEnv:
         loading_arr = np.abs(pf.results.loading)
         line_monitor, overload_penalty_sum, max_loading_pct = [], 0.0, 0.0
 
-        if getattr(self, "verbose", False):
+        if getattr(self, "verbose", True):
             print("=== LINE MONITOR (aligned with VeraGrid results.loading) ===")
             for i, br in enumerate(branches):
                 fb = getattr(getattr(br, "bus_from", None), "name", f"?{i}")
