@@ -145,9 +145,9 @@ def compute_static_branch_limits_high_RE(
     base_grid,
     th2_max=120.0,
     th3_max=80.0,
-    pv_max_possible=36.0,     # ~ 40 * 0.90 (pv_range max)
-    wt_max_possible=47.5,     # ~ 50 * 0.95 (wt_range max)
-    load_stress_res=1.1,      # 稍高一点的负荷水平来定容量
+    pv_max_possible=360.0,     # ~ 40 * 0.90 (pv_range max)
+    wt_max_possible=470.5,     # ~ 50 * 0.95 (wt_range max)
+    load_stress_res=1.2,      # 稍高一点的负荷水平来定容量
     safety_factor=1.2,
     floor_MVA=5.0,
 ):
@@ -311,7 +311,7 @@ class GridOPFEnv:
         """
         self.load_scale = float(self.rng.normal(1.0, self.load_jitter))
         # clip：你说的“抽0.8-1.1就行”
-        self.load_scale = max(0.8, min(1.1, self.load_scale))
+        self.load_scale = max(0.8, min(1.2, self.load_scale))
 
         for ld in self.grid.loads:
             ld.P *= self.load_scale
@@ -319,25 +319,36 @@ class GridOPFEnv:
 
     def _apply_action_to_generators(self, action_vec):
         """
-        Agent 动作: [Bus2火电出力, Bus3火电出力, PV出力, WT出力]
-        我们把这四台机组硬钉到该出力：Pmin=Pmax=该值。
-        Slack 自动补平系统功率差。
+        输入: action_vec ∈ [-1, 1]^4  （顺序: th2, th3, pv, wt）
+        输出: 实际钉住的 [th2, th3, pv, wt] (MW)
         """
-        th2, th3, pv, wt = map(float, action_vec)
+        u_th2, u_th3, u_pv, u_wt = map(float, action_vec)
 
-        def clamp(x, lo, hi):
-            return float(max(lo, min(hi, x)))
+        # 保险剪裁到 [-1,1]
+        u_th2 = np.clip(u_th2, -1.0, 1.0)
+        u_th3 = np.clip(u_th3, -1.0, 1.0)
+        u_pv  = np.clip(u_pv,  -1.0, 1.0)
+        u_wt  = np.clip(u_wt,  -1.0, 1.0)
 
-        g2 = get_generators_at_bus(self.grid, self.thermal_buses[0])[0]  # Bus2
-        g3 = get_generators_at_bus(self.grid, self.thermal_buses[1])[0]  # Bus3
-        g6 = get_generators_at_bus(self.grid, self.pv_bus)[0]            # PV
-        g8 = get_generators_at_bus(self.grid, self.wt_bus)[0]            # WT
+        def map_unit_to_range(u, lo, hi):
+            # u=-1 -> lo, u=+1 -> hi
+            return lo + (u + 1.0) * 0.5 * (hi - lo)
 
         (lo2, hi2), (lo3, hi3) = self.th_limits
-        th2 = clamp(th2, lo2, hi2)
-        th3 = clamp(th3, lo3, hi3)
-        pv  = clamp(pv,  0.0, self.pv_pmax_rand)
-        wt  = clamp(wt,  0.0, self.wt_pmax_rand)
+
+        th2 = map_unit_to_range(u_th2, lo2, hi2)
+        th3 = map_unit_to_range(u_th3, lo3, hi3)
+
+        # 注意：PV/WT 的上限每个 episode 都在随机化
+        pv_hi = float(self.pv_pmax_rand)
+        wt_hi = float(self.wt_pmax_rand)
+        pv = map_unit_to_range(u_pv, 0.0, pv_hi)
+        wt = map_unit_to_range(u_wt, 0.0, wt_hi)
+
+        g2 = get_generators_at_bus(self.grid, self.thermal_buses[0])[0]
+        g3 = get_generators_at_bus(self.grid, self.thermal_buses[1])[0]
+        g6 = get_generators_at_bus(self.grid, self.pv_bus)[0]
+        g8 = get_generators_at_bus(self.grid, self.wt_bus)[0]
 
         _pin_gen_power(g2, th2)
         _pin_gen_power(g3, th3)
@@ -512,8 +523,8 @@ class GridOPFEnv:
         g_slack = get_generators_at_bus(self.grid, self.slack_bus)[0]  # Bus1
         c1_s = float(getattr(g_slack, "Cost", 60.0))
         c2_s = float(getattr(g_slack, "Cost2", 0.0))
-        slack_cost = c1_s * P_slack + c2_s * (P_slack ** 2)
-
+        P_slack_gen = max(0.0, P_slack)
+        slack_cost = c1_s * P_slack_gen + c2_s * (P_slack_gen ** 2)
         C_gen += slack_cost
         per_gen.append({
             "name": getattr(g_slack, "name", "slack_bus1"),
@@ -589,7 +600,7 @@ class GridOPFEnv:
         # =====================
         # 总成本 & 回报
         # =====================
-        total_cost = C_gen / 1000.0 + C_loss + C_ov / 500.0
+        total_cost = C_gen / 1000.0 + C_loss + C_ov / 5000.0
         reward = - total_cost
 
         # =====================
