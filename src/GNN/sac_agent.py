@@ -157,6 +157,10 @@ class GNNSAC:
         # 连续动作 Nsgen：常用目标熵为 -Nsgen
         self.target_entropy = -act_dim if target_entropy is None else target_entropy
 
+        # 用于记录整个训练过程的 Q-value 对比数据
+        self.q_record_pred = []
+        self.q_record_targ = []
+
     @property
     def alpha(self):
         return self.log_alpha.exp()
@@ -172,8 +176,9 @@ class GNNSAC:
         for (data, a_np, r, data2, d) in batch:
             data  = data.to(self.device)
             data2 = data2.to(self.device)
+            reward_scale = 10.0 # 尺度调整
             a  = torch.as_tensor(a_np, dtype=torch.float32, device=self.device)  # (Nsgen,)
-            r  = torch.as_tensor(r, dtype=torch.float32, device=self.device).view(1)
+            r  = torch.as_tensor(r * reward_scale, dtype=torch.float32, device=self.device).view(1)
             d  = torch.as_tensor(d, dtype=torch.float32, device=self.device).view(1)
 
             # target
@@ -183,14 +188,23 @@ class GNNSAC:
                 q2_t = self.q2_targ(data2, a2)
                 q_t  = torch.min(q1_t, q2_t) - self.alpha * logp_a2
                 backup = r + (1 - d) * self.gamma * q_t
+                backup = torch.clamp(backup, -1e3, 1e3) # 防止极端负值
 
             # critic
             q1 = self.q1(data, a)
             q2 = self.q2(data, a)
             loss_q1 = ((q1 - backup) ** 2).mean()
             loss_q2 = ((q2 - backup) ** 2).mean()
-            self.q1_opt.zero_grad(); loss_q1.backward(); self.q1_opt.step()
-            self.q2_opt.zero_grad(); loss_q2.backward(); self.q2_opt.step()
+
+            self.q1_opt.zero_grad()
+            loss_q1.backward()
+            torch.nn.utils.clip_grad_norm_(self.q1.parameters(), max_norm=1.0) # 梯度裁剪（避免梯度爆炸）
+            self.q1_opt.step()
+
+            self.q2_opt.zero_grad()
+            loss_q2.backward()
+            torch.nn.utils.clip_grad_norm_(self.q2.parameters(), max_norm=1.0) # 梯度裁剪（避免梯度爆炸）
+            self.q2_opt.step()
 
             # actor
             for p in self.q1.parameters(): p.requires_grad = False
@@ -202,7 +216,10 @@ class GNNSAC:
             q_pi  = torch.min(q1_pi, q2_pi)
             loss_pi = (self.alpha * logp_pi - q_pi).mean()
 
-            self.pi_opt.zero_grad(); loss_pi.backward(); self.pi_opt.step()
+            self.pi_opt.zero_grad()
+            loss_pi.backward()
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0) # 梯度裁剪（避免梯度爆炸）
+            self.pi_opt.step()
 
             for p in self.q1.parameters(): p.requires_grad = True
             for p in self.q2.parameters(): p.requires_grad = True
@@ -217,6 +234,39 @@ class GNNSAC:
                     p_t.data.mul_(self.polyak); p_t.data.add_((1 - self.polyak) * p.data)
                 for p, p_t in zip(self.q2.parameters(), self.q2_targ.parameters()):
                     p_t.data.mul_(self.polyak); p_t.data.add_((1 - self.polyak) * p.data)
+
+            # --- 记录 Q 数据用于最终散点图 ---
+            with torch.no_grad():
+                self.q_record_pred.append(q1.item())
+                self.q_record_targ.append(backup.item())
+
+    def plot_q_scatter_final(self, save_path=None):
+        import matplotlib.pyplot as plt
+        if len(self.q_record_pred) == 0:
+            print("[WARN] No Q data recorded, nothing to plot.")
+            return
+
+        pred = np.array(self.q_record_pred)
+        targ = np.array(self.q_record_targ)
+
+        plt.figure(figsize=(6, 6))
+        plt.scatter(targ, pred, alpha=0.4, s=10)
+        lims = [min(targ.min(), pred.min()), max(targ.max(), pred.max())]
+        plt.plot(lims, lims, 'r--', linewidth=1.5, label='y = x')
+        plt.xlabel("Target Q (ground truth)")
+        plt.ylabel("Predicted Q (critic output)")
+        plt.title("Final Q-value Scatter (all updates)")
+        plt.legend()
+        plt.grid(True, linestyle='--', alpha=0.3)
+        plt.tight_layout()
+
+        if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            plt.savefig(save_path)
+            plt.close()
+            print(f"[INFO] Saved Q scatter plot to {save_path}")
+        else:
+            plt.show()
 
 
 # Replay

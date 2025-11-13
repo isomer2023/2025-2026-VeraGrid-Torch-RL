@@ -95,6 +95,8 @@ def train(args):
                 json.dump({"sb_code": args.sb_code, "in_nf": in_nf, "in_ef": in_ef, "act_dim": act_dim}, jf, indent=2)
             print(f"[Save] {ckpt}")
 
+        agent.plot_q_scatter_final(save_path="./logs/q_scatter_final.png")
+
 # 将当前环境中的所有可控发电机出力写入 csv
 # 每个 ep 追加一行
 def save_predicted_outputs(env, log_dir, epoch, reward_sum):
