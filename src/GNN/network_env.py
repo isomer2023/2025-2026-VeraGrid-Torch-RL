@@ -1,5 +1,8 @@
 # network_env.py —— 显式切网 + sgen→generator 映射
 # GNN观测仅含“当步负荷/出力”，动作直接生效；支持每步重采样与多步回合
+# network_env.py -- Explicit network switching + sgen→generator mapping
+# GNN observations include only "current step load/output", action takes effect directly.
+# Support per-step resampling and multistep rounds
 from __future__ import annotations
 import numpy as np
 import copy
@@ -13,15 +16,15 @@ from src.GNN.network_loader import load_simbench_as_veragrid
 
 
 pd.set_option('future.no_silent_downcasting', True)
-# 运行选项
-GLOBAL_SB_CODE = "1-HV-urban--0-sw"
-USE_ALL_SGEN = True                      # 仅控制 sgen → Generator
-RESAMPLE_LOAD_EACH_STEP = True           # 每步对负荷做随机扰动
-LOAD_SIGMA = 0.03                        # 负荷扰动标准差（3%）
-EP_HORIZON = 24                          # 每回合步数
+# Settings
+GLOBAL_SB_CODE = "1-HVMV-urban-2.203-0-no_sw"
+USE_ALL_SGEN = True                      # sgen = Generator
+RESAMPLE_LOAD_EACH_STEP = True           # Random load adjusting
+LOAD_SIGMA = 0.03                        # load sigma
+EP_HORIZON = 24                          # ep per round
 
 # 电网控制环境大类
-class GridOPFEnv:
+class GridEnv:
     RECOMMENDED_ACT_LIMIT = 1.0  # 策略输出 ∈ [-1,1]
 
     def __init__(self,
@@ -32,13 +35,20 @@ class GridOPFEnv:
                  enable_opf_eval=False,
                  opf_solver="NONLINEAR_OPF",
                  sb_code: str | None = None,
-                 obs_mode: str = "graph"):
+                 obs_mode: str = "graph",
+                 reward_w_gen: float = 1.0,
+                 reward_w_loss: float = 0.01,
+                 reward_w_ov: float = 1000.0
+                 ):
         self.sb_code = sb_code or GLOBAL_SB_CODE
         self.obs_mode = obs_mode
         self.base_net, self.base_grid = load_simbench_as_veragrid(self.sb_code)
         self.rng = np.random.default_rng(seed)
+        self.reward_w_gen = float(reward_w_gen)
+        self.reward_w_loss = float(reward_w_loss)
+        self.reward_w_ov = float(reward_w_ov)
 
-        # 识别 slack bus
+        # id slack bus
         self.slack_bus_name = None
         try:
             if len(self.base_net.ext_grid):
@@ -57,7 +67,7 @@ class GridOPFEnv:
         if self.slack_bus_name is None:
             self.slack_bus_name = "1"
 
-        # 可控机组列表（只控 sgen_*）
+        # list sgen
         self.ctrl_gens = []
         for g in self.base_grid.generators:
             gname = str(getattr(g, "name", ""))
@@ -66,7 +76,7 @@ class GridOPFEnv:
                     self.ctrl_gens.append(g)
 
         self.action_dim = len(self.ctrl_gens)
-        assert self.action_dim > 0, "没有可控 sgen 机组，检查网络或 USE_ALL_SGEN 设置。"
+        assert self.action_dim > 0, "NO sgen CAN BE CONTROL，CHECK NETWORK OR USE_ALL_SGEN。"
 
         self.state_dim = self._infer_state_dim()
         self.lambda_loss     = float(lambda_loss)
@@ -206,7 +216,7 @@ class GridOPFEnv:
             if is_slack:
                 g.Cost, g.Cost2, g.Vset = 60.0, 0.0, 1.02
             elif str(getattr(g, "name", "")).startswith("sgen_"):
-                g.Cost, g.Cost2, g.Vset = 0.0, 0.0, 1.02
+                g.Cost, g.Cost2, g.Vset = 5.0, 0.0, 1.02
             else:
                 g.Cost, g.Cost2, g.Vset = 5.0, 0.0, 1.02
 
@@ -243,8 +253,8 @@ class GridOPFEnv:
                         pass
 
             # 收紧边界，避免被别的流程改走
-            g.Pmin = float(P)
-            g.Pmax = float(P) + 1e-9
+            # g.Pmin = float(P)
+            # g.Pmax = float(P) + 1e-9
 
             # 明确不是slack
             if hasattr(g, "is_slack"): g.is_slack = False
@@ -267,7 +277,7 @@ class GridOPFEnv:
     # step
     def step(self, action: np.ndarray):
         action = np.asarray(action, dtype=float)
-        assert action.shape[0] == self.action_dim, f"action 维度应为 {self.action_dim}"
+        assert action.shape[0] == self.action_dim, f"action dim {self.action_dim}"
 
         # 每步重采样负荷（可选）
         self._resample_loads(self.grid)
@@ -318,10 +328,10 @@ class GridOPFEnv:
             elif hasattr(pf.results, "gen_P"):
                 P_arr_actual = np.asarray(pf.results.gen_P, dtype=float)
             else:
-                raise AttributeError("pf.results 未找到 gen_p / p_mw / gen_P 字段")
+                raise AttributeError("pf.results cannot find gen_p / p_mw / gen_P")
 
             if len(P_arr_actual) != len(self.grid.generators):
-                raise ValueError(f"发电结果数量 {len(P_arr_actual)} ≠ 机组数 {len(self.grid.generators)}")
+                raise ValueError(f"generation result {len(P_arr_actual)} does not equal generator numbers {len(self.grid.generators)}")
 
             P_mw = P_arr_actual / 1e6 if np.nanmax(np.abs(P_arr_actual)) > 1e4 else P_arr_actual
             C_tmp = 0.0
@@ -388,7 +398,14 @@ class GridOPFEnv:
             info["soft_error_line_rate_missing"] = int(missing_rate_cnt)
 
         # 汇总奖励
-        total_cost = (float(C_gen) * 0.1) + (float(C_loss) * 1.0) + (float(C_ov) * 0.001) # 可按需调权重
+        # total_cost = (float(C_gen) * 0.1) + (float(C_loss) * 1.0) + (float(C_ov) * 0.001) # 可按需调权重
+        # 汇总奖励（可配置，靠近传统 OPF：以发电成本为主）
+        # C_gen: total generation cost (same units as cost parameters)
+        # C_loss: loss cost already computed as lambda_loss * P_loss_mw
+        # C_ov: overload penalty computed earlier (already multiplied by lambda_overload)
+        total_cost = (float(C_gen) * self.reward_w_gen) \
+                     + (float(C_loss) * self.reward_w_loss) \
+                     + (float(C_ov) * self.reward_w_ov)
         reward = - total_cost
 
         # 观测与附加信息
@@ -427,8 +444,8 @@ class GridOPFEnv:
 # 主外部接口
 def make_env(seed: int | None = None,
              sb_code: str | None = None,
-             obs_mode: str = "graph") -> GridOPFEnv:
-    env = GridOPFEnv(seed=seed,
+             obs_mode: str = "graph") -> GridEnv:
+    env = GridEnv(seed=seed,
                      enable_opf_eval=False,
                      opf_solver="NONLINEAR_OPF",
                      sb_code=sb_code,
@@ -448,7 +465,7 @@ def get_env_spec(seed: int | None = None,
     env = make_env(seed=seed, sb_code=sb_code, obs_mode=obs_mode)
     spec = {
         "action_dim": int(env.action_dim),
-        "act_limit": float(GridOPFEnv.RECOMMENDED_ACT_LIMIT),
+        "act_limit": float(GridEnv.RECOMMENDED_ACT_LIMIT),
         "sb_code": env.sb_code,
         "use_all_sgen": USE_ALL_SGEN,
         "obs_mode": obs_mode,

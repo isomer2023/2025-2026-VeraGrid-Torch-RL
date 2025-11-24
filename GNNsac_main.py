@@ -3,6 +3,7 @@ import argparse
 from src.GNN.sac_train import train
 import warnings
 import numpy as np
+
 warnings.filterwarnings("ignore", category=FutureWarning)
 np.seterr(invalid='ignore', divide='ignore')
 
@@ -13,8 +14,9 @@ def parse_args():
     ap.add_argument("--device", type=str, default=None)
     ap.add_argument("--save_every", type=int, default=0)
 
-    # 显式切换 SimBench 网
-    ap.add_argument("--sb_code", type=str, default="1-HV-urban--0-sw")
+    # switch SimBench network
+    # ap.add_argument("--sb_code", type=str, default="1-HV-urban--0-sw")
+    ap.add_argument("--sb_code", type=str, default="1-HVMV-urban-2.203-0-no_sw")
 
     # SAC
     ap.add_argument("--max_episodes", type=int, default=500)
@@ -40,3 +42,5 @@ if __name__ == "__main__":
 
 # 注释：
 # 奖励函数调整每项权重： network_env
+# network_loader.py line 140: 为什么所有的cost都是0? now change to 5
+# also, network_env.py, line 219, same ask, change to 5

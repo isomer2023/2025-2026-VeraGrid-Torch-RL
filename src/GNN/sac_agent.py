@@ -176,7 +176,7 @@ class GNNSAC:
         for (data, a_np, r, data2, d) in batch:
             data  = data.to(self.device)
             data2 = data2.to(self.device)
-            reward_scale = 10.0 # 尺度调整
+            reward_scale = 1.0 # 尺度调整
             a  = torch.as_tensor(a_np, dtype=torch.float32, device=self.device)  # (Nsgen,)
             r  = torch.as_tensor(r * reward_scale, dtype=torch.float32, device=self.device).view(1)
             d  = torch.as_tensor(d, dtype=torch.float32, device=self.device).view(1)
@@ -264,7 +264,7 @@ class GNNSAC:
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             plt.savefig(save_path)
             plt.close()
-            print(f"[INFO] Saved Q scatter plot to {save_path}")
+            print(f"[Info] Saved Q scatter plot to {save_path}")
         else:
             plt.show()
 

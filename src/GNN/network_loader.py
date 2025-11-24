@@ -137,7 +137,7 @@ def load_simbench_as_veragrid(sb_code: str):
                 g.bus = b_gc
                 g.Pmin, g.Pmax = float(Pmin), float(Pmax)
                 g.Qmin, g.Qmax = -0.5 * Pmax, 0.5 * Pmax
-                g.Cost, g.Cost2 = 0.0, 0.0
+                g.Cost, g.Cost2 = 5.0, 5.0 # need to know why?
                 g.Vset = getattr(b_gc, "Vset", 1.0)
                 grid_gc.generators.append(g)
                 created += 1

@@ -8,6 +8,9 @@ import src.GNN.network_env as net
 from src.GNN.sac_agent import GNNSAC
 from src.GNN.sac_agent import GraphReplay
 from src.GNN.sac_agent import obs_to_data
+# 新增：调用 OPF 对照（传入 env）
+from src.GNN.network_opf import run_pandapower_opf_for_env,write_opf_to_csv
+
 
 # 库报错检查
 try:
@@ -43,9 +46,19 @@ def train(args):
     with open(rewards_csv, "w", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow(["episode", "total_reward"])
 
+    # 在训练循环开始前初始化CSV文件
+    csv_path = os.path.join(args.log_dir, "opf_results.csv")
+
     for ep in range(args.max_episodes):
         obs = env.reset()
+        save_initial_sgen_values(env, args.log_dir, ep)
         data = obs_to_data(obs)
+
+
+        # 运行OPF
+        opf_res = run_pandapower_opf_for_env(env, sb_code=args.sb_code, use_sgen_values_from_env=True)
+        # 写入CSV
+        write_opf_to_csv(csv_path, ep, opf_res)
 
         # 动作
         if ep < args.start_random_eps:
@@ -95,13 +108,13 @@ def train(args):
                 json.dump({"sb_code": args.sb_code, "in_nf": in_nf, "in_ef": in_ef, "act_dim": act_dim}, jf, indent=2)
             print(f"[Save] {ckpt}")
 
-        agent.plot_q_scatter_final(save_path="./logs/q_scatter_final.png")
+        agent.plot_q_scatter_final(save_path="./logs/q_scatter_final_2.png")
 
 # 将当前环境中的所有可控发电机出力写入 csv
 # 每个 ep 追加一行
 def save_predicted_outputs(env, log_dir, epoch, reward_sum):
     os.makedirs(log_dir, exist_ok=True)
-    csv_path = os.path.join(log_dir, "predicted_outputs.csv")
+    csv_path = os.path.join(log_dir, f"predicted_outputs_{1}.csv")
     # 获取机组名称与当前出力
     gen_names = [g.name for g in env.ctrl_gens]
     # generator.P 是实际输出功率(MW)
@@ -113,3 +126,19 @@ def save_predicted_outputs(env, log_dir, epoch, reward_sum):
         if not file_exists:
             writer.writerow(["epoch", "reward_sum"] + gen_names)
         writer.writerow([epoch, reward_sum] + gen_outputs)
+
+# 保存初始读入的sgen值
+def save_initial_sgen_values(env, log_dir, epoch):
+    os.makedirs(log_dir, exist_ok=True)
+    csv_path = os.path.join(log_dir, "initial_sgen_values.csv")
+
+    gen_names = [g.name for g in env.ctrl_gens]
+    # 初始功率值 = Pmax = SimBench中每个sgen的原始出力
+    init_values = [float(getattr(g, "Pmax", 0.0)) for g in env.ctrl_gens]
+
+    file_exists = os.path.isfile(csv_path)
+    with open(csv_path, mode="a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["epoch"] + gen_names)
+        writer.writerow([epoch] + init_values)
