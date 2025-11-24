@@ -27,7 +27,7 @@ except ImportError as e:
 # ================= 配置参数 =================
 SB_CODE = "1-MV-urban--0-sw"
 LR = 0.0005
-EPOCHS = 19200
+EPOCHS = 3000
 # ✅ [关键修改] 增大 Batch Size，让 BatchNorm 正常工作
 BATCH_SIZE = 32
 HIDDEN_DIM = 128
@@ -320,10 +320,6 @@ def evaluate_model(model, grid, bus_idx_map, test_idx, df_load_p, df_load_q, df_
             # pred 的形状通常是 [num_nodes, 1] 或者 [num_nodes]
             pred = model(data)
 
-            # --- E. 精确对齐与数据收集 (关键修正) ---
-            # 直接遍历发电机，利用 bus_idx_map 找到对应的 Node Index
-            # 从而同时获取 True Value 和 Pred Value，绝不会错位
-
             for g_idx, g in enumerate(grid.generators):
                 if "sgen" in getattr(g, 'name', ''):
                     bus = getattr(g, 'bus', getattr(g, 'node', None))
@@ -353,7 +349,6 @@ def evaluate_model(model, grid, bus_idx_map, test_idx, df_load_p, df_load_q, df_
                                     "Abs_Error": abs(pred_alpha_clamped - true_alpha)
                                 })
 
-    # --- 后续绘图与保存代码与之前一致 ---
     df = pd.DataFrame(results_list)
     if df.empty:
         print("❌ 没有收集到有效的测试数据。")
@@ -411,6 +406,11 @@ def evaluate_model(model, grid, bus_idx_map, test_idx, df_load_p, df_load_q, df_
 
     print("🖼️  所有图像已生成: eval_1_scatter.png, eval_2_error_hist.png, eval_3_gen_boxplot.png")
 
+
+# 必须引入 Batch 工具
+from torch_geometric.data import Batch
+
+
 def main():
     print(f"🚀 启动训练: {SB_CODE} (Batch={BATCH_SIZE})")
 
@@ -429,14 +429,13 @@ def main():
     all_idx = np.arange(n_time_steps)
     split1 = int(0.8 * n_time_steps)
     train_idx = all_idx[:split1]
-    test_idx = all_idx[split1:]  # 保留测试集索引
+    test_idx = all_idx[split1:]
 
     # 2. 模型初始化
     model = GridGNN(num_node_features=6, num_edge_features=4,
                     hidden_dim=HIDDEN_DIM, heads=HEADS).to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=LR)
 
-    # 3. 训练循环 (保持你原有的逻辑，稍作精简)
     print(f"\n{'Epoch':<6} | {'Loss':<10} | {'Info'}")
     print("-" * 50)
 
@@ -445,16 +444,19 @@ def main():
     log_writer.writerow(["epoch", "time_index", "loss"])
 
     best_loss = float('inf')
-    accumulated_loss = 0.0
+
+    # 【修改点 1】 创建一个列表来暂存 Batch 数据
+    batch_data_list = []
+
+    optimizer.zero_grad()  # 移到循环外初始化
 
     for epoch in range(EPOCHS):
         t = int(np.random.choice(train_idx))
 
-        # --- 数据生成逻辑 (与你原有代码一致) ---
+        # --- 环境生成 (保持不变) ---
         stress_factor = np.random.uniform(6.0, 8.0)
         current_load_p = df_load_p.iloc[t]
         current_load_q = df_load_q.iloc[t]
-
         for l in grid.loads:
             try:
                 idx = int(l.name.split('_')[1])
@@ -475,7 +477,7 @@ def main():
                 except:
                     pass
 
-        # Pre-PF
+        # --- Pre-PF (保持不变) ---
         pf_driver = None
         current_pf_results = None
         try:
@@ -486,15 +488,17 @@ def main():
         except:
             pass
 
-        # OPF Teacher
+        # --- OPF Teacher (保持不变) ---
         teacher_driver = setup_and_run_opf_teacher(grid, sgen_p_dict)
         if not (teacher_driver and hasattr(teacher_driver.results, 'converged') and teacher_driver.results.converged):
-            if (epoch + 1) % BATCH_SIZE == 0: optimizer.zero_grad()
             continue
 
         gen_p_vec = get_safe_gen_results(teacher_driver, grid)
-        full_target = torch.zeros(len(grid.buses), 1).to(DEVICE)
-        target_alphas = []
+
+        # 【修改点 2】 Target 生成：需要存储到 CPU，不需要立刻转 GPU
+        # 我们需要一个全零的 Target 向量，长度等于节点数
+        full_target = torch.zeros(len(grid.buses), 1)
+        valid_sample = False
 
         for i, g in enumerate(grid.generators):
             if "sgen" in getattr(g, 'name', ''):
@@ -507,42 +511,63 @@ def main():
                         if p_avail > 0.001:
                             alpha = np.clip(p_opt / p_avail, 0.0, 1.0)
                             full_target[idx] = alpha
-                            target_alphas.append(alpha)
+                            valid_sample = True
 
-        if not target_alphas: continue
+        if not valid_sample: continue
 
-        # GNN Step
-        model.train()
+        # --- 获取图数据 ---
+        # 注意：这里我们只要 CPU 数据，最后 Batch 了一起转 GPU
         data, mask = get_graph_data(grid, current_pf_results, bus_idx_map)
-        pred = model(data)
 
-        if mask.sum() > 0:
-            loss = F.smooth_l1_loss(pred[mask], full_target[mask], beta=0.1)
-            (loss / BATCH_SIZE).backward()
-            accumulated_loss += loss.item()
+        # 【修改点 3】 将 target 和 mask 挂载到 data 对象上
+        # 因为 Batch() 函数会自动拼接 data 对象里的属性，只要维度对得上
+        data.y_target = full_target  # [Num_Nodes, 1]
+        data.mask = mask.cpu()  # [Num_Nodes] (转回 CPU 方便 Batch)
+        data.to('cpu')  # 确保都在 CPU 上
 
-            if (epoch + 1) % BATCH_SIZE == 0:
+        batch_data_list.append(data)
+
+        # 【修改点 4】 真正的 Batch 训练逻辑
+        if len(batch_data_list) >= BATCH_SIZE:
+            model.train()
+            optimizer.zero_grad()
+
+            # A. 物理拼接：把 32 个小图拼成 1 个大图
+            # 这时候 BatchNorm 看到的是 (Num_Nodes * 32) 个点，统计数据非常稳定
+            big_batch = Batch.from_data_list(batch_data_list).to(DEVICE)
+
+            # B. 前向传播
+            pred = model(big_batch)
+
+            # C. 取出拼接后的 Target 和 Mask
+            target_batch = big_batch.y_target.to(DEVICE)
+            mask_batch = big_batch.mask.to(DEVICE)
+
+            # D. 计算 Loss
+            if mask_batch.sum() > 0:
+                loss = F.smooth_l1_loss(pred[mask_batch], target_batch[mask_batch], beta=0.1)
+                loss.backward()
+
+                # 梯度裁剪
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
                 optimizer.step()
-                optimizer.zero_grad()
 
-                avg_loss = accumulated_loss / BATCH_SIZE
-                accumulated_loss = 0.0
-
-                if avg_loss < best_loss:
-                    best_loss = avg_loss
+                # E. 记录和保存
+                current_loss = loss.item()
+                if current_loss < best_loss:
+                    best_loss = current_loss
                     torch.save(model.state_dict(), SAVE_PATH)
 
-                print(f"{epoch + 1:<6} | {avg_loss:.5f}       | Best: {best_loss:.5f}")
-                log_writer.writerow([epoch + 1, t, avg_loss])
+                print(f"{epoch:<6} | {current_loss:.5f}       | Best: {best_loss:.5f}")
+                log_writer.writerow([epoch, t, current_loss])
+
+            # F. 清空列表
+            batch_data_list = []
 
     log_f.close()
     print(f"\n🎉 训练完成！启动评估...")
-
-    # ================= 4. 调用评估 =================
-    # 使用测试集索引进行评估
     evaluate_model(model, grid, bus_idx_map, test_idx, df_load_p, df_load_q, df_sgen_p, DEVICE)
-
 
 if __name__ == "__main__":
     main()
