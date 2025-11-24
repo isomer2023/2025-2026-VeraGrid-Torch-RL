@@ -93,6 +93,13 @@
           </mappings>
         </serverdata>
       </paths>
+      <paths name="root@connect.westb.seetacloud.com:18593 password">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
       <paths name="root@connect.westb.seetacloud.com:29777 password">
         <serverdata>
           <mappings>
@@ -114,6 +121,20 @@
           </mappings>
         </serverdata>
       </paths>
+      <paths name="root@connect.westc.gpuhub.com:18327 password">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/tmp/pycharm_project_436" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="root@connect.westc.gpuhub.com:23595 password">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
       <paths name="root@connect.westc.gpuhub.com:27060 password">
         <serverdata>
           <mappings>
@@ -121,7 +142,35 @@
           </mappings>
         </serverdata>
       </paths>
+      <paths name="root@connect.westc.gpuhub.com:35460 password">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/tmp/pycharm_project_483" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="root@connect.westc.gpuhub.com:36604 password">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="root@connect.westc.gpuhub.com:37788 password">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
       <paths name="root@connect.westc.gpuhub.com:38951 password">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="root@connect.westd.seetacloud.com:22510 password">
         <serverdata>
           <mappings>
             <mapping local="$PROJECT_DIR$" web="/" />
