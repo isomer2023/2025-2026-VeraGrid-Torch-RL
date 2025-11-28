@@ -9,7 +9,7 @@ from src.GNN.sac_agent import GNNSAC
 from src.GNN.sac_agent import GraphReplay
 from src.GNN.sac_agent import obs_to_data
 # 新增：调用 OPF 对照（传入 env）
-from src.GNN.network_opf import run_pandapower_opf_for_env,write_opf_to_csv
+from src.GNN.network_opf import run_veragrid_opf_for_env,write_opf_to_csv
 
 
 # 库报错检查
@@ -56,7 +56,7 @@ def train(args):
 
 
         # 运行OPF
-        opf_res = run_pandapower_opf_for_env(env, sb_code=args.sb_code, use_sgen_values_from_env=True)
+        opf_res = run_veragrid_opf_for_env(env, sb_code=args.sb_code, use_sgen_values_from_env=True)
         # 写入CSV
         write_opf_to_csv(csv_path, ep, opf_res)
 

@@ -42,5 +42,6 @@ if __name__ == "__main__":
 
 # 注释：
 # 奖励函数调整每项权重： network_env
-# network_loader.py line 140: 为什么所有的cost都是0? now change to 5
-# also, network_env.py, line 219, same ask, change to 5
+# network_loader.py line 140: 为什么所有的cost都是0?
+# network_env.py, line 219, same ask
+# network_env.py, line 256, 257, Pmin and Pmax why are same? lock before decide the power of sgen

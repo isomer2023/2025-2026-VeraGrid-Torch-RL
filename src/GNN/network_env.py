@@ -216,7 +216,7 @@ class GridEnv:
             if is_slack:
                 g.Cost, g.Cost2, g.Vset = 60.0, 0.0, 1.02
             elif str(getattr(g, "name", "")).startswith("sgen_"):
-                g.Cost, g.Cost2, g.Vset = 5.0, 0.0, 1.02
+                g.Cost, g.Cost2, g.Vset = 0.0, 0.0, 1.02 # need to know why: PV is estimated at 0 cost provide power
             else:
                 g.Cost, g.Cost2, g.Vset = 5.0, 0.0, 1.02
 
@@ -253,8 +253,8 @@ class GridEnv:
                         pass
 
             # 收紧边界，避免被别的流程改走
-            # g.Pmin = float(P)
-            # g.Pmax = float(P) + 1e-9
+            g.Pmin = float(P)
+            g.Pmax = float(P) + 1e-9
 
             # 明确不是slack
             if hasattr(g, "is_slack"): g.is_slack = False
