@@ -27,7 +27,7 @@ except ImportError as e:
 # ================= 配置参数 =================
 SB_CODE = "1-MV-urban--0-sw"
 LR = 0.0005
-EPOCHS = 3000
+EPOCHS = 20000
 # ✅ [关键修改] 增大 Batch Size，让 BatchNorm 正常工作
 BATCH_SIZE = 32
 HIDDEN_DIM = 128
