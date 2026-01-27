@@ -1,0 +1,22 @@
+{
+  "exp_name": "MPNN_FULL",
+  "best_val_loss": 0.21515947580337524,
+  "alpha": {
+    "r2": 0.5330861235857469,
+    "mae": 0.09401876538733168
+  },
+  "vm": {
+    "r2": -6.237762083359725,
+    "mae": 0.001177783798840311
+  },
+  "angle": {
+    "mae_deg_wrapped": 0.3808464122410186,
+    "r2_sincos": 0.9998039172799338,
+    "mae_sincos": 0.0033623221652718804
+  },
+  "cfg": {
+    "use_attn_bias": true,
+    "zero_edge_attr": false,
+    "zero_vn_after_norm": false
+  }
+}
