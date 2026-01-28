@@ -1,0 +1,4 @@
+Model: MLP_Baseline
+MAE: 0.071724
+MSE: 0.012493
+R2 Score: 0.673950
