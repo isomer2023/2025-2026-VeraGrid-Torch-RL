@@ -1,0 +1,4 @@
+Model: GNN_Baseline
+MAE: 0.105276
+MSE: 0.019381
+R2 Score: 0.471549

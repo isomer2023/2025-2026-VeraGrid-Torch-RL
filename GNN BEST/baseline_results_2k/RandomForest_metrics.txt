@@ -1,0 +1,4 @@
+Model: RandomForest
+MAE: 0.064593
+MSE: 0.010533
+R2 Score: 0.712799

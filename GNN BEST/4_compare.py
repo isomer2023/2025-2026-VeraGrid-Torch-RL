@@ -20,12 +20,12 @@ datetime = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(CURRENT_DIR, f"dataset_output_1mv_urban20260127_152301")
+DATA_DIR = os.path.join(CURRENT_DIR, f"dataset_output_1mv_urban")
 STATS_PATH = os.path.join(DATA_DIR, "stats.pt")
 ASSETS_PATH = os.path.join(DATA_DIR, "static_assets.pt")
 
 # 结果保存目录
-RESULT_DIR = os.path.join(CURRENT_DIR, "baseline_results")
+RESULT_DIR = os.path.join(CURRENT_DIR, "baseline_results_2k")
 os.makedirs(RESULT_DIR, exist_ok=True)
 
 BATCH_SIZE = 32
